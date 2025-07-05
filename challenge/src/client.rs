@@ -1,8 +1,9 @@
 use rand::Rng;
+use rayon::prelude::*;
 use tfhe::prelude::*;
-use tfhe::{ClientKey, ConfigBuilder, FheUint8, ServerKey};
+use tfhe::{ClientKey, ConfigBuilder, FheUint4, ServerKey};
 
-pub(crate) type EncryptedGrid = Vec<Vec<FheUint8>>;
+pub(crate) type EncryptedGrid = Vec<Vec<FheUint4>>;
 
 pub(crate) struct Client {
     client_key: ClientKey,
@@ -37,13 +38,13 @@ impl Client {
     pub(crate) fn encrypt(&self) -> (ServerKey, EncryptedGrid) {
         let encrypted_grid = self
             .grid
-            .iter()
+            .par_iter()
             .map(|row| {
-                row.iter()
-                    .map(|&cell| FheUint8::encrypt(cell, &self.client_key))
-                    .collect::<Vec<FheUint8>>()
+                row.par_iter()
+                    .map(|&cell| FheUint4::encrypt(cell, &self.client_key))
+                    .collect::<Vec<FheUint4>>()
             })
-            .collect::<Vec<Vec<FheUint8>>>();
+            .collect::<Vec<Vec<FheUint4>>>();
         let server_key = ServerKey::new(&self.client_key);
 
         (server_key, encrypted_grid)
@@ -59,23 +60,24 @@ impl Client {
         let decrypted_grid = self.decrypt(encrypted_grid);
         let expected_grid = self.grid_after_steps(steps);
 
-        for i in 0..self.grid.len() {
-            for j in 0..self.grid[i].len() {
-                if expected_grid[i][j] != decrypted_grid[i][j] {
-                    return false;
-                }
-            }
-        }
-
-        true
+        // 并行化验证过程
+        (0..self.grid.len()).into_par_iter().all(|i| {
+            (0..self.grid[i].len()).into_par_iter().all(|j| {
+                println!(
+                    "Comparing cell ({}, {}): expected {}, got {}",
+                    i, j, expected_grid[i][j], decrypted_grid[i][j]
+                );
+                expected_grid[i][j] == decrypted_grid[i][j]
+            })
+        })
     }
 
     fn decrypt(&self, encrypted_grid: EncryptedGrid) -> Vec<Vec<u8>> {
         encrypted_grid
-            .iter()
+            .par_iter()
             .map(|row| {
-                row.iter()
-                    .map(|cell| FheUint8::decrypt(cell, &self.client_key))
+                row.par_iter()
+                    .map(|cell| FheUint4::decrypt(cell, &self.client_key))
                     .collect::<Vec<u8>>()
             })
             .collect::<Vec<Vec<u8>>>()
@@ -90,7 +92,6 @@ impl Client {
     }
 
     fn next_generation(&self, grid: &Vec<Vec<u8>>) -> Vec<Vec<u8>> {
-        let mut new_grid = grid.clone();
         let directions = [
             (-1, -1),
             (-1, 0),
@@ -102,30 +103,34 @@ impl Client {
             (1, 1),
         ];
 
-        for i in 0..grid.len() {
-            for j in 0..grid[i].len() {
-                let mut live_neighbors = 0;
-                for &(dx, dy) in &directions {
-                    let ni = i as isize + dx;
-                    let nj = j as isize + dy;
-                    if ni >= 0 && ni < grid.len() as isize && nj >= 0 && nj < grid[i].len() as isize
-                    {
-                        live_neighbors += grid[ni as usize][nj as usize];
-                    }
-                }
+        (0..grid.len())
+            .into_par_iter()
+            .map(|i| {
+                (0..grid[i].len())
+                    .into_par_iter()
+                    .map(|j| {
+                        let mut live_neighbors = 0;
+                        for &(dx, dy) in &directions {
+                            let ni = i as isize + dx;
+                            let nj = j as isize + dy;
+                            if ni >= 0 && ni < grid.len() as isize && nj >= 0 && nj < grid[i].len() as isize
+                            {
+                                live_neighbors += grid[ni as usize][nj as usize];
+                            }
+                        }
 
-                if grid[i][j] == 1 {
-                    new_grid[i][j] = if live_neighbors < 2 || live_neighbors > 3 {
-                        0
-                    } else {
-                        1
-                    };
-                } else {
-                    new_grid[i][j] = if live_neighbors == 3 { 1 } else { 0 };
-                }
-            }
-        }
-
-        new_grid
+                        if grid[i][j] == 1 {
+                            if live_neighbors < 2 || live_neighbors > 3 {
+                                0
+                            } else {
+                                1
+                            }
+                        } else {
+                            if live_neighbors == 3 { 1 } else { 0 }
+                        }
+                    })
+                    .collect::<Vec<u8>>()
+            })
+            .collect::<Vec<Vec<u8>>>()
     }
 }

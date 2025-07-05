@@ -5,7 +5,9 @@ edition = "2024"
 
 [dependencies]
 rand = "0.9.1"
-tfhe = { version = "1.2.0", features = ["boolean", "integer"] }
+tfhe = { version = "1.2.0", features = ["boolean", "integer", "nightly-avx512"] }
+rayon = "1.10.0"
+
 
 [profile.release]
-opt-level = 1
+opt-level = 3
